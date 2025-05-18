@@ -1,0 +1,438 @@
+---
+title: "BOO 2025 - Example Analysis"
+subtitle: "Script 3: Sample QC - Questions"
+date: "`r Sys.Date()`" 
+author: 
+  Jurgen Zwerwer
+output:
+  html_document:
+    code_download: true
+    theme: united
+    highlight: tango
+    df_print: paged
+    toc: true
+    number_sections: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+***
+
+> In this script, you will perform sample-level quality control (QC), removing any poor quality samples and ensuring that experimental replicates are comparable to one another. 
+
+***
+
+# Setup
+
+## Clean
+
+As before, we perform several setup steps at the start of the script to ensure our work is reproducible and clear. 
+
+**Exercise 1: Download the R markdown template and clean your environment:**
+
+```{r clean}
+# 
+
+```
+
+***
+
+## Set variables
+
+**Exercise 2: Create the following objects in your R environment:**
+
+* `root_dir` - project folder
+* `count_path` - location of the `countData` object within the project folder
+* `cpm_path` - location of the `cpmData` object
+* `metadata_path` - location of the `metaData` object
+
+* `count_store` - location to save the `countData` object within the project folder
+* `cpm_store` - location to save the `cpmData` object
+* `metadata_store` - location to save the filtered `metaData` after QC
+
+* `count_threshold` - minimum library size required for samples (600,000; 20% of the target sequencing depth)
+* `corr_threshold` - required correlation between replicates (0.9)
+
+```{r set-variables}
+# The following vectors are created to allow loading data and saving output data
+root_dir <- "~/Documents/BOO 2025 Code/Project/QC/Output/" 
+
+count_path <- "qc_counts.Rdata" 
+cpm_path <- "cpm_data.Rdata" 
+metadata_path <- "clean_metadata.Rdata"
+
+count_store <- "countData_QC.Rdata"
+cpm_store <- "cpmData_QC.Rdata"
+metadata_store <- "metaData_QC.Rdata" 
+
+count_threshold <- 6E5
+
+corr_threshold <- 0.9 
+```
+
+***
+
+## Packages
+
+Here, we load `tidyverse` and also a new package:
+
+* `ggrepel` allows us labels in plots to "repel" each other and make visualizations clearer
+
+**Exercise 3: Load `tidyverse` and `ggrepel` into your environment:**
+
+```{r load-packages, warning=F, message=F}
+library(tidyverse)
+library(ggrepel)
+```
+
+***
+
+## Load data
+
+**Exercise 4: Load the count data, CPM data, and metadata into your environment:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  Make sure these are the ones your saved at the end of the probe QC.
+
+</details>
+
+```{r load-data, warning=FALSE, message=FALSE}
+# Loading the required data
+load(paste0(root_dir, count_path))
+load(paste0(root_dir, cpm_path))
+load(paste0(root_dir, metadata_path))
+```
+
+***
+
+# Library size
+
+## Check
+
+Before applying any filters, it is good to perform some checks.
+
+**Exercise 5: Check that the column names of `countData` match the `sample_ID` order in `metaData`:**
+
+```{r order-check}
+# To check whether the column names of Gene_count2 match the sample_ID in Gene_meta they are compared
+table(Gene_meta$sample_ID == colnames(Gene_count2))
+```
+
+***
+
+## Calculate
+
+**Exercise 6: Now that we have removed unreliable and lowly expressed probes from `countData`, recalculate and save a new `lib_size` in the metadata:**
+
+```{r calculate-lib}
+# Unnecessary probes were removed in the probe QC file, a new lib_size is calculated and saved in Gene_meta, first the current lib sizes are summarized
+summary(Gene_meta$lib_size)
+# Then the new library size for each sample is calculated
+Gene_meta$lib_size <- colSums(Gene_count2)
+# Finally, the new lib_size is summarized
+summary(Gene_meta$lib_size)
+```
+The lib_sizes are slightly smaller due to the removal of some genes. As the removed genes were low-expressed, these changes in lib_size are very small. 
+***
+
+## Distribution
+
+**Exercise 7: Make a histogram of `lib_size`. What range of values does this variable take and is this reasonable for a TempO-Seq experiment?**
+
+```{r lib-histogram}
+# The ggplot function is used to visualize the distribution of the library sizes 
+ggplot(Gene_meta, aes(x = lib_size)) +
+  geom_histogram(binwidth = 1e5, fill = "steelblue", color = "black") +
+  labs(
+    title = "Distribution of Library Sizes",
+    x = "Library Size (total counts per sample)",
+    y = "Number of Samples"
+  ) +
+  theme_minimal()
+```
+The library size distribution shows how many samples have a given total number of sequencing reads (library size). It provides an overview of the sequencing depth across all samples. The smallest library sizes have around 2 million counts, the largest approximately 5.5 million. The average TempO-Seq sample has around 3M reads, which makes this range reasonable. 
+***
+
+## Flag
+
+Samples whose library size is below 20% of the targeted sequencing depth (`corr_threshold`; 600,000) should be flagged as having low reads.
+
+**Exercise 8: Create a flag in `metaData` describing if samples have low reads or not:**
+
+```{r lib-flag}
+# A flag is created to describe whether samples have low reads
+Gene_meta <- Gene_meta %>% mutate(flagLowReads = ifelse(lib_size <= count_threshold, T, F))
+
+table(Gene_meta$flagLowReads)
+```
+None have low reads. 
+***
+
+## Plot
+
+It is good to visualize the library size for each sample, grouped by compound ID. This shows us whether samples are well above the threshold, and allows us to inspect the data more carefully.
+
+**Exercise 9: Create a boxplot for the library sizes of each compound (including DMSO) and describe any patterns you identify:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  You can colour your boxplots by concentration to visualize patterns more clearly.
+
+</details>
+
+```{r lib-boxplot}
+#A boxplot was created for the library sizes of each compound
+Gene_meta %>%   
+  # It is ensured that concentration ID is treated as a factor
+  mutate(conc_ID = factor(conc_ID)) %>%   
+  # Compounds are plot on the x axis and library size on the y axis
+  ggplot(aes(x=compound_ID, y=lib_size)) + 
+  # Boxplots are created of the library size distributions
+  geom_boxplot(aes(color=conc_ID), width=0.8) +  
+  # A dashed lineis added to represent the library size threshold
+  geom_hline(aes(yintercept=count_threshold), color="grey5", linetype="dashed") +
+  # Values below the threshold are labeled
+  geom_text_repel(aes(x = compound_ID, y = lib_size, color = conc_ID),   
+                   label=ifelse(Gene_meta$lib_size < count_threshold, 
+                                Gene_meta$rep, "")) +
+  # Axis labels and title are set
+  xlab("") + ylab("Library size") + ggtitle("Library size distributions") +    
+  theme_bw()
+```
+No concentration of both chloroacetamide and TMA neared the threshold. Most means of library sizes lay between 3 and 4 million reads. There were some that exceeded 4 million, but not by much. 
+***
+
+# Replicate correlation
+
+## log2CPM
+
+The replicate correlation filter aims to remove any outlying replicates, with maximum pairwise correlations below the `corr_threshold` (set to 0.9). We usually perform this correlation analysis on the log2CPM values to ensure highly expressed genes do not have undue influence on the correlation values. A value of 1 is added to the CPM, to prevent issues arising from the fact that `log2(0)` is `-Inf`. 
+
+**Exercise 10: Calculate and store the log2(CPM + 1) values in a `logcpmData` object:**
+
+```{r log2cpm}
+# The log values of the cpmData is calculated and assigned to a vector
+logcpmData <- log2(cpmData + 1)
+```
+
+***
+
+## Pairwise correlations
+
+In order to calculate pairwise correlations, each sample needs to be compared to the other replicates in its experimental group. We can do this by looping through `mean_ID`.
+
+**Exercise 11: Calculate the pairwise replicate correlations for this data:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  The correlation can be calculated using `cor(cpmDataReps[,j], cpmDataReps[,k])` within an appropriate loop.
+
+</details>
+
+```{r pairwise-corr}
+# The replicate filter output was initialized as a data frame
+replicateFilterOutput <- data.frame()
+
+# For each mean ID (experimental condition) the meta data is subsetted to keep only samples from this experiment
+for(i in unique(Gene_meta$mean_ID)){
+  metaDataReps <- Gene_meta %>% 
+    filter(mean_ID == i)
+  
+  # The log2 CPM values are subsetted to keep only these samples
+  cpmDataReps <- logcpmData[, metaDataReps$sample_ID] 
+  
+  # Each column is looped through in the CPM data  
+  for(j in 1:ncol(cpmDataReps)){
+    for(k in 1:ncol(cpmDataReps)){
+      # The position in the loops is saved
+      sample_A <- colnames(cpmDataReps)[j]
+      sample_B <- colnames(cpmDataReps)[k]
+      
+      # Pairwise correlations should only be calculated between different samples. 
+      if(sample_A != sample_B){
+        # Pairwise correlation values are calculated
+        r2 <- cor(cpmDataReps[,j], cpmDataReps[,k])
+        
+        # The filter output data frame is updated
+        replicateFilterOutput <- rbind(
+          replicateFilterOutput, 
+          data.frame(mean_ID = i, 
+                     sample_A = sample_A,
+                     sample_B = sample_B,
+                     r2 = r2))
+      }
+    }
+  }
+}
+
+# View output
+head(replicateFilterOutput)
+```
+
+***
+
+## Maximum
+
+Each sample is judged by the best pairwise correlation it can achieve. If this is below `corr_threshold`, the sample should be flagged.
+
+**Exercise 12: Calculate the `max_r2` for each sample and add it to the `replicateFilterOutput`:**
+
+```{r max-r2}
+replicateFilterOutput <- replicateFilterOutput %>% 
+  # Sample name is seperated into compound and concentration using the underscore
+  separate(sample_A, 
+           into = c("Compound", "Conc_ID", NA, NA), 
+           remove = F, 
+           sep = "_") %>% 
+  # If the compound is DMSO then keep only the first 5 letters
+  mutate(Compound = ifelse(grepl("DMSO", Compound), substr(Compound,1,5), Compound)) %>% 
+  # Group by sample
+  group_by(sample_A) %>%
+  # The maximum pairwise correlation for that sample is saved
+  mutate(max_r2 = max(r2, na.rm = T)) %>% 
+  ungroup()
+
+# View output
+summary(replicateFilterOutput$max_r2)
+```
+
+***
+
+## Plot
+
+**Exercise 13: Visualize the pairwise replicate correlations for each experimental conditions. Describe what you observe:**
+
+```{r corr-boxplot}
+# The sample ID is plotted against the pairwise correlation
+replicateFilterOutput %>% 
+  ggplot(aes(x = sample_A, y = r2)) +
+  # A boxplot is made of the pairwise correlation distribution
+  geom_boxplot(color = "grey80") +
+  geom_point(color = "grey60", size = 0.5) +
+  geom_point(aes(y = max_r2, color = Conc_ID), 
+             size = 1.5) +
+  # A line drawn for the filter threshold
+  geom_hline(aes(yintercept = corr_threshold), 
+             color = "grey60", linetype = "dashed") +
+  ylab("") + xlab("Sample ID") + ggtitle("Replicate correlations") +
+  theme_bw() +
+  theme(axis.text.x = element_blank()) +
+  # A different plot for each compound is made
+  facet_wrap(~Compound, scales='free_x', nrow=2)
+```
+
+***
+
+## Flag
+
+**Exercise 14: Flag any samples that did not pass the replicate correlation filter in the `metaData`:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  You can merge the replicate correlation filter output with the metaData to create a `max_r2` column after some processing.
+
+</details>
+
+```{r corr-flag}
+# Make a data frame of sample IDs and max r2
+replicateFilterMerge <- replicateFilterOutput %>% 
+  select(sample_ID = sample_A, max_r2) %>% 
+  distinct()
+
+# Merge with meta data
+Gene_meta <- left_join(Gene_meta, replicateFilterMerge, 
+                      by = "sample_ID") %>% mutate(flagLowCorr = ifelse(max_r2 <= corr_threshold, T, F))
+
+table(Gene_meta$flagLowCorr)
+```
+This step is unnecessary as no samples were below the threshold. If any samples were, they should return TRUE. 
+***
+
+# Advanced questions
+
+If you would like a bit more of a challenge, here are a few extra questions relating to the two sample QC steps above. However, you can also skip these, save your data, and move on to the PCA.
+
+## Library size
+
+**Exercise 14: What are the benefits of a sample having a higher library size and does this benefit apply to some genes more than others?**
+
+```{r read-depth}
+#
+
+```
+
+***
+
+## Replicate correlation
+
+Instead of looking at pairwise correlations, another way of measuring how good a replicate is is by comparing it to the average for that experimental condition. 
+
+**Exercise 15: Calculate replicate correlation in this way and see if it alters the results of this filter. What is one benefit and downside of assessing replicate correlation in this manner?**
+
+```{r mean-corr}
+#
+
+```
+
+***
+
+# Save
+
+**Exercise 16: Remove samples that did not pass the sample QC steps from your data:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  Don't forget to also subset the count and CPM data.
+
+</details>
+
+```{r any-flag}
+# Subset the metadata to keep only high quality samples
+Gene_meta <- Gene_meta %>% 
+  filter(!flagLowReads & !flagLowCorr)
+
+# Subset the count and CPM data
+cpmData <- cpmData[ , Gene_meta$sample_ID]
+Gene_count2 <- Gene_count2[ , Gene_meta$sample_ID]
+
+# Check dimensions
+dim(Gene_meta)
+```
+
+***
+
+## Save
+
+**Exercise 17: Save the updated data:**
+
+```{r save-metadata}
+save(Gene_meta, file=paste0(root_dir, metadata_store))
+save(cpmData, file=paste0(root_dir, cpm_store))
+save(Gene_count2, file=paste0(root_dir, count_store))
+```
+
+***
+
+# Session Info
+
+**Exercise 18: Print your session info at the end of the script, knit the R markdown document, and push it to GitHub:**
+
+```{r session-info}
+sessionInfo()
+```
+
+***
+
+That is the end of the Sample QC. Example answers will be available from the `BOO_template` GitHub on Tuesday. 
+
+Next, please move on to the PCA using `04_PCA_Outline.Rmd`.
+
+***
+
