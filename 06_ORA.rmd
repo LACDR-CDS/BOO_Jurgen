@@ -1,0 +1,372 @@
+---
+author: Jurgen Zwerwer
+date: 2025-05-15
+generator: pandoc
+title: BOO 2025 - Example Analysis
+viewport: width=device-width, initial-scale=1
+---
+
+::: {.container-fluid .main-container}
+::: row
+::: {.col-xs-12 .col-sm-4 .col-md-3}
+::: {#TOC .tocify}
+:::
+:::
+
+::: {.toc-content .col-xs-12 .col-sm-8 .col-md-9}
+::: {#header}
+::: {.btn-group .pull-right .float-right}
+Code []{.caret}
+
+-   [Download Rmd](#){#rmd-download-source}
+:::
+
+# BOO 2025 - Example Analysis {#boo-2025---example-analysis .title .toc-ignore}
+
+### Script 6: Functional enrichment - Answers {#script-6-functional-enrichment---answers .subtitle}
+
+#### Student name {#student-name .author}
+
+#### 2025-05-15 {#section .date}
+:::
+
+------------------------------------------------------------------------
+
+> In this script, you will biologically interpret your differentially
+> expressed genes.
+
+------------------------------------------------------------------------
+
+::: {#setup .section .level1 number="1"}
+# [1]{.header-section-number} Setup
+
+::: {#clean .section .level2 number="1.1"}
+## [1.1]{.header-section-number} Clean
+
+As before, we perform several setup steps at the start of the script to
+ensure our work is reproducible and clear.
+
+**Exercise 1: Download the R markdown template, clean your environment,
+and set the folhighing variables:**
+
+-   `root_dir` - project folder
+-   `low_store` - location of DEG results for the low toxicity compound
+-   `high_store` - location of DEG results for the high toxicity
+    compound
+
+``` {r}
+rm(list=ls()) # Clean environment
+
+root_dir <- "~/Documents/BOO 2025 Code/Project/" # Define directory from which files can be imported and stored.
+
+low_store <- "DEG analysis/Output/DEGres_low.Rdata" # Where the low-tox data is stored
+high_store <- "DEG analysis/Output/DEGres_high.Rdata" # Where the high-tox data is stored
+```
+
+------------------------------------------------------------------------
+:::
+
+::: {#packages .section .level2 number="1.2"}
+## [1.2]{.header-section-number} Packages
+
+In this script, we introduce a new package: `enrichR`, a package for
+gene set enrichment analysis that identifies biological pathways, gene
+ontology terms, and other functional annotations significantly
+associated with a given list of genes.
+
+**Exercise 2: Load `enrichR` and `tidyverse` into your R environment:**
+
+``` {r}
+# Load libraries
+library(tidyverse)
+library(enrichR)
+```
+
+------------------------------------------------------------------------
+:::
+
+::: {#load-data .section .level2 number="1.3"}
+## [1.3]{.header-section-number} Load data
+
+**Exercise 3: Load the DEG results R environment:**
+
+```{r}
+# Load in data
+load(paste0(root_dir, high_store))
+load(paste0(root_dir, low_store))
+```
+
+------------------------------------------------------------------------
+:::
+:::
+
+::: {#ora .section .level1 number="2"}
+# [2]{.header-section-number} ORA
+
+::: {#databases .section .level2 number="2.1"}
+## [2.1]{.header-section-number} Databases
+
+When performing any type of gene set analysis, you need to specify the
+gene sets of interest. This is one of the pitfalls but also benefits of
+this type of analysis.
+
+**Exercise 4: Use `listEnrichrDbs()` and look at the gene set databases
+available. Select a few of interest and describe them:**
+
+**Hint**
+
+Sometimes a specific database has different version for different years.
+Try to select the most recent ones using `grepl`.
+
+``` {r}
+listEnrichrDbs() %>% # Retrieves a list of all available gene set libraries that can be used by Enrichr
+  filter(grepl("202", libraryName)) # Filters the list to only include rows where libraryName column contains "202"
+```
+
+::: {pagedtable="false"}
+:::
+
+- KEGG_2021_Human: Focuses on well researched biological pathways, including metabolism, genetic information processing and disease mechanisms.
+- GO_Biological_Process_2025: Annotates genes based on the biological function they contribute to, such as metabolism or apoptosis. It is unique because it focuses on multi-step, coordinated events involving multiple gene products in cellular or physiological contexts.
+- GO_Molecular_Function_2025: Classifies genes by their basic molecular activities such as ligand binding or kinase activity. It captures what a gene product does biochemically, independent of its location.
+- Jensen_DISEASES_Experimental_2025: This database links genes to diseases based on literature, gene expression data and clinical studies. It helps identify genes associated with specific diseases.
+------------------------------------------------------------------------
+:::
+
+::: {#deg-list .section .level2 number="2.2"}
+## [2.2]{.header-section-number} DEG List
+
+In order to run ORA you need a list of genes of interest (your DEGs).
+
+**Exercise 5: Make a DEG list for each of the two compounds. How many
+DEGs do you have for each?**
+
+**Hint**
+
+If you compound shows a dose response, you may want to select genes at a
+particular concentration of interest.
+
+``` {r}
+deg_high <- unique((res_high %>% # Duplicated gene_symbols are removed and all gene_symbols with sig = T are filtered out.
+               filter(sig == T))$gene_symbol)
+# The same is done for the low deg data set.
+deg_low <- unique((res_low %>% 
+               filter(sig == T))$gene_symbol)
+length(deg_high) # This shows how many DEGs there are in deg_high
+length(deg_low) # This shows how many DEGs there are in deg_low
+```
+
+There are 1866 DEGs for the high toxicity compound and 135 for the low
+toxicity one.
+
+------------------------------------------------------------------------
+:::
+
+::: {#enrichr .section .level2 number="2.3"}
+## [2.3]{.header-section-number} Enrichr
+
+The `enrichr` function performs over-representation analysis (ORA) using
+a list of genes in each of the databases specified by the `databases`
+argument, returning a list.
+
+**Exercise 6: Run `enrichr` using the selected databases and inspect the
+output for each compound. Are there any pathways you expected?:**
+
+**Hint**
+
+You can use `bind_rows()` to convert lists into data frames and make
+inspecting the output easier.
+
+``` {r}
+ora_high <- enrichr(deg_high,
+                       c("GO_Biological_Process_2025",
+                         "GO_Molecular_Function_2025",
+                         "Reactome_Pathways_2024",
+                         "KEGG_2021_Human")) # Deg_high is submitted to enrichr, 4 data libraries are used. All of which are stored in ora_high
+```
+
+``` {r}
+ora_high <- bind_rows(ora_high) # Combines the list of enrichment results into a single data frame
+
+ora_high %>% 
+  filter(Adjusted.P.value <= 0.05) %>% # ora_high is filtered to keep only statistically significant enriched terms
+  separate(Overlap, into = c("num", "denom"), sep = "/", convert = TRUE) %>% # The overlap columns contain values such as 10/30, this is converted to numeric values by separating it
+  mutate(relative_overlap = num / denom) %>% # A new column called relative_overlap is made containing the num divided by the denom from the Overlap column
+  arrange(desc(relative_overlap)) # relative_overlap is arranged in a descending order
+```
+
+::: {pagedtable="false"}
+:::
+
+There are 428 enriched terms in the DEGs from the high toxicity compound, which is a lot more compared to the low-tox compound. This makes sense since the high tox compound has a lot more DEGs as well. Many pathways are indicating normal cell behaviour. However, many are indicating abnormal behaviour, a couple are listed below:
+- Heme Degradation
+- Ferroptosis
+- Response of EIF2AK1 (HRI) to Heme Deficiency
+- TP53 Regulates Transcription of Death Receptors and Ligands
+- Acute-Phase Response
+------------------------------------------------------------------------
+
+``` {r}
+ora_low <- enrichr(deg_low, # The same as with ora_high, enrichr is applied to deg_low
+                       c("GO_Biological_Process_2025",
+                         "GO_Molecular_Function_2025",
+                         "Reactome_Pathways_2024",
+                         "KEGG_2021_Human"))
+```
+
+    ## Uploading data to Enrichr... Done.
+    ##   Querying GO_Biological_Process_2025... Done.
+    ##   Querying GO_Molecular_Function_2025... Done.
+    ##   Querying Reactome_Pathways_2024... Done.
+    ##   Querying KEGG_2021_Human... Done.
+    ## Parsing results... Done.
+
+``` {r}
+ora_low <- bind_rows(ora_low) # Combines the list of enrichment results into a single data frame
+
+ora_low %>% 
+  filter(Adjusted.P.value <= 0.05) %>% # Data is filtered to only contain rows with adjusted p-value <= 0.05
+  separate(Overlap, into = c("num", "denom"), sep = "/", convert = TRUE) %>% 
+  mutate(relative_overlap = num / denom) %>% # A new column called relative_overlap is made containing the num divided by the denom from the Overlap column
+  arrange(desc(relative_overlap)) # relative_overlap is arranged in a descending order
+```
+
+::: {pagedtable="false"}
+:::
+
+There are 83 enriched terms in the DEGs from the low toxicity compound
+(TMA). Most upregulated pathways seem to be associated with normal cell behaviour. However, there are a couple interesting ones: 
+- Cellular Response to Starvation
+- Cellular Responses to Stress
+- Pathways of neurodegeneration
+- Diabetic cardiomyopathy
+Most of these pathways have a low overlap, suggesting that only few up- or downregulated genes in this pathway are related to these pathways. Additionally some of these pathways are relevant to the brain and heart, but not necessesarily to the liver, suggesting that these are not relevant. 
+------------------------------------------------------------------------
+:::
+
+::: {#plots .section .level2 number="2.4"}
+## [2.4]{.header-section-number} Plots
+:::
+
+::: {#bar-plots .section .level2 number="2.5"}
+## [2.5]{.header-section-number} Bar plots
+
+Using `geom_col`, we can visualize the results for each of the
+compounds.
+
+**Exercise 7: Take a look at the top enriched terms for each compound:**
+
+``` {r}
+ora_high %>% 
+  arrange(Adjusted.P.value, P.value) %>% # Arranges enrichment results by statistical significance
+  head(10) %>% # Display the first 10
+  mutate(log10p = -log10(P.value)) %>% # Transforms the p-value to -log10(p.value), more significant terms appear as higher bars in plot
+  separate(Overlap, 
+           sep="/", 
+           into=c("Genes_found", "Size"),
+           remove=F) %>% # Splits overlap column into Genes_found and size, this is now ready for plotting
+  mutate(Size = as.numeric(Size)) %>% 
+  ggplot(aes(y=reorder(Term, log10p))) + # Y-axis is determined, most significant log10p values appear on top
+  geom_col(aes(x=log10p, fill = Size), # Horizontal bars that represent -log10(p)
+           color='black') + # With color black
+  ylab('') + xlab('-log10p') + ggtitle("Top ten enriched terms: ") + # Labels are added to x and y axis and a title is made
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 30)) + # Wraps long pathway names
+  theme_bw() + # A theme is added
+  theme(axis.text.y = element_text(size=7)) # Changes the y-axis text so it fits
+```
+
+``` {r}
+ora_low %>% # Everything is the same as in the previous chunk but with the low-tox compound
+  arrange(Adjusted.P.value, P.value) %>% 
+  head(10) %>%
+  mutate(log10p = -log10(P.value)) %>% 
+  separate(Overlap, 
+           sep="/", 
+           into=c("Genes_found", "Size"),
+           remove=F) %>% 
+  mutate(Size = as.numeric(Size),
+         Genes = str_wrap(Genes, width = 10)) %>% 
+  ggplot(aes(y=reorder(Term, log10p))) + 
+  geom_col(aes(x=log10p, fill = Size),
+           color='black') +
+  ylab('') + xlab('-log10p') + ggtitle("Top ten enriched terms: ") +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 30)) +
+  theme_bw() +
+  theme(axis.text.y = element_text(size=7))
+```
+------------------------------------------------------------------------
+:::
+
+::: {#upset-plot .section .level2 number="2.6"}
+## [2.6]{.header-section-number} Upset plot
+
+You may also want to visualize the top enriched terms for both compounds
+together.
+
+**Exercise: Use `geom_tile()` to do this:**
+
+First we select terms to use in the plot (top 10 for each compound):
+
+``` {r}
+top_terms <- c((ora_high %>% head(10))$Term, (ora_low %>% head(10))$Term)
+top_terms # top_terms is made, in which ora_high and ora_low are combined. The term column in extracted and the first 10 rows are picked
+```
+------------------------------------------------------------------------
+
+Then we bind the results together, making a new variable specifying if
+the compound is high or low toxicity:
+
+``` {r}
+ora_high$Toxicity <- "High"
+ora_low$Toxicity <- "Low"
+# Adds new columns to ora high and low to indicate whether a row is from the high or low toxicity dataset
+ora_both <- rbind(ora_high, ora_low) # Ora high and low are combined into one
+ora_both # The result is printed
+```
+
+::: {pagedtable="false"}
+:::
+
+Then, we can make the plot:
+
+``` {r}
+ora_both %>% 
+  filter(Term %in% top_terms) %>% # Filters combined enrichment results to include the top 10 terms from each condition
+  ggplot(aes(y=Term, x=Toxicity)) + # A plot is made with on the y-axis the enriched terms and on the x-axis high or low tox
+  geom_tile(color="grey50", fill="grey90", linewidth = 0.3) + # A light grey tile background is added for each point
+  geom_point(aes(fill=Adjusted.P.value, size=Odds.Ratio), shape=21, color='black') + # Places the circles, size is determined by the odds ratio and color by significance
+  ylab("") + # No y-axis label is added
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 50), # Wraps long names to avoid overlapping
+                   expand=c(0,0)) +
+  scale_x_discrete(expand=c(0,0)) +
+  scale_fill_gradientn(colors = c('dodgerblue', 'black')) + # No spacing between x and y tiles, color gradient is made
+  ggtitle('Top enriched terms in both compounds:') + # A title is added
+  theme_minimal() + # A theme is added
+  theme(
+    axis.text.y = element_text(size=6), # The text of the y-axis is changed in size
+    panel.background = element_rect(fill='white', color='grey50'), # The background is made white and the rectangles are made grey
+    panel.grid = element_blank() # No grid lines
+  )
+```
+
+
+
+------------------------------------------------------------------------
+:::
+:::
+
+::: {#session-info .section .level1 number="3"}
+# [3]{.header-section-number} Session Info
+
+``` {r}
+devtools::session_info()
+```
+
+------------------------------------------------------------------------
+:::
+
+::: {#rmd-source-code}
+:::
+:::
+:::
+:::

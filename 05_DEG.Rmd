@@ -1,0 +1,612 @@
+---
+title: "BOO 2025 - Example Analysis"
+subtitle: "Script 5: Differential expression - Answers"
+date: "`r Sys.Date()`" 
+author: 
+  Jurgen Zwerwer
+output:
+  html_document:
+    code_download: true
+    theme: united
+    lowlight: tango
+    df_print: paged
+    toc: true
+    number_sections: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+***
+
+> In this script, you will identify differentially expressed genes (DEGs) and save your results.
+
+***
+
+# Setup
+
+## Clean
+
+As before, we perform several setup steps at the start of the script to ensure our work is reproducible and clear. 
+
+**Exercise 1: Download the R markdown template, clean your environment, and set the folhighing variables:**
+
+* `root_dir` - project folder
+* `count_path` - location of the `countData` object
+* `metadata_path` - location of the `metaData` object
+* `low_store` - location to store DEG results for the low toxicity compound
+* `high_store` - location to store DEG results for the high toxicity compound
+
+```{r clean}
+# Environment is cleaned
+rm(list=ls())
+# Directories are made to load and store data
+root_dir <- "~/Documents/BOO 2025 Code/Project/DEG analysis/" 
+
+count_path <- "Input/countData_QC.Rdata"
+metadata_path <- "Input/metaData_QC.Rdata" 
+
+low_store <- "Output/DEGres_low.Rdata"
+high_store <- "Output/DEGres_high.Rdata"
+```
+
+***
+
+## Packages
+
+In this script, we introduce a new package: `DESeq2`, a package that analyses count-based sequencing data, such as TempO-Seq, to identify differentially expressed genes between experimental conditions.
+
+**Exercise 2: Load `DESeq2`, `ggrepel`, and `tidyverse` into your R environment:**
+
+```{r load-packages, warning=F, message=F}
+# Packages are loaded
+library(tidyverse)
+library(ggrepel)
+library(DESeq2)
+```
+
+***
+
+## Load data
+
+**Exercise 3: Load the count and metadata into your R environment:**
+
+```{r load-data, warning=FALSE, message=FALSE}
+# Data is loaded in
+load(paste0(root_dir, count_path))
+load(paste0(root_dir, metadata_path))
+```
+
+***
+
+# DEG Analysis 
+
+## Mean ID
+
+In order to perform DEG analysis we need to ensure we have the correct `mean_ID` and `mean_ID_control` variables. These can be used to tell DESeq2 which samples to compare:
+
+* `mean_ID` is a group identifier, describing which treatment condition each sample belongs to
+* `mean_ID_control` is a control identifier, describing which control samples a group should be compared to
+
+In the case of our data we will have:
+
+* A `mean_ID` level for each experimental condition (7 concentrations for 2 compounds plus two plate-specific DMSO groups)
+* No `mean_ID_control` for the DMSO controls, but the appropriate DMSO control specified for the treated samples
+
+**Exercise 4: Identify these variables in your data:**
+
+```{r inspect}
+Gene_meta %>% 
+  select(mean_ID, mean_ID_control) %>% # The mean_ID and mean_ID control columns are selected from Gene_meta
+  filter(!is.na(mean_ID_control)) %>% # Filter is used to keep only the rows where mean_ID_control is not NA, essentially, it filters out rows where mean_ID_control is missing
+  distinct() # Removes duplicate rows from the resulting subset, keeping only unique combinations of mean_ID and mean_control
+```
+
+***
+
+## Contrast
+
+DESeq2 uses an object called a contrast, which details the comparisons that will be run. We often want to save several comparisons together in one object, such as all results for each compound together.
+
+**Exercise 5: Create a `contrast` data frame, including a variable `file_ID` which describes which file each comparison should be saved in:**
+
+```{r contrast}
+contrast <- Gene_meta %>% # Storing in vector contrast
+  filter(!is.na(mean_ID_control)) %>% # Filters Gene_meta to keep only rows where mean_ID_control is not NA, leaving only samples with a control
+  select(mean_ID, mean_ID_control, file_ID = compound_ID) %>% # Selects 3 columns: mean_ID, mean_ID_control and file_ID which is the compound the cells were exposed to
+  distinct # Removes duplicate rows, keeping unique combinations of the three columns
+
+contrast # View the result
+```
+
+***
+
+## Subsets
+
+We want to perform DEG analysis for each concentration of the low and high toxicity compounds.
+
+**Exercise 6: Subset `contrast` to include only the comparisons for the low toxicity compound and create a vector `levels` which can be used to loop through the selected `mean_ID`s:**
+
+```{r levels}
+contrast_low <- contrast %>% 
+  filter(file_ID == "CS1128") # Only the file IDs of samples treated with CS1128 are included in vector contrast_low
+
+contrast_low # contrast_low is then printed
+
+levels <- unique(contrast_low$mean_ID) # The mean IDs in contrast_low are put into the vector levels, making sure there are no duplicates using unique
+
+levels # Levels is then printed
+```
+
+***
+
+Before looping through `levels`, let's go through the steps required to perform a DEG analysis.
+
+**Exercise 7: Using the first value in `levels`, subset the `contrast`, `countData`, and `metaData` to include only the relevant samples:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  Make sure you create new objects, such as `countData_sub` and `metaData_sub` to prevent overwriting the full data frame.
+
+</details>
+
+```{r subset}
+i <- levels[1] # Assigns the first value of levels to i
+i # i is then printed
+
+contrast_sub <- contrast_low %>% # Stores subset of contrast_low into contrast_sub
+  filter(mean_ID == i) # Filters contrast_low to only include rows where mean_ID equals i, the treatment currently focused on
+contrast_sub # Printing contrast_sub
+
+metaData_sub <- Gene_meta %>% # Stores subset of Gene_meta into metaData_sub
+  filter(mean_ID %in% c(contrast_sub$mean_ID,  contrast_sub$mean_ID_control)) # Filters Gene_meta to include only rows where mean_ID is the selected treatment or the corresponding control
+metaData_sub # Printing the result
+
+countData_sub <- Gene_count2[ , metaData_sub$sample_ID] # A subset is made of Gene_count2 columns to include only the sample IDs present in metaData_sub
+countData_sub[1:10, ] # Shows the first 10 genes of the count data for the selected samples
+```
+
+***
+
+## Fit models
+
+Now that we have subset our data, we can use it to create a DESeq object (`dds`). This also requires us to set our `design`, or model formula. In our data, this will be a simple comparison of two levels of `mean_ID`.
+
+**Exercise 8: Use the `DESeqDataSetFromMatrix()` function to create a `dds` object:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  Designs are a special type of object in R, the formula, which is specified using a tilde (e.g. `~ mean_ID`).
+
+</details>
+
+```{r fit}
+dds <- DESeqDataSetFromMatrix(
+  countData = countData_sub, # A DESeqDataSet object is made of the count data and meta data this is necessary to perform normalization and DEG, here the gene counts are selected
+  colData = metaData_sub, # The meta data is selected
+  design = ~ mean_ID # Indicates that gene expression is modeled as a function of mean_ID
+)
+```
+
+***
+
+Next, we use the `DESeq()` function to:
+
+1. Calculate **size factors** using the median ratio method, which normalizes for differences in sequencing depth or library size across samples. The motivation is similar to CPM normalization, but each sample is instead compared to a pseudo-reference sample composed of the geometric mean of all genes. 
+2. Estimate **dispersions** (biological variability) for each gene across replicates, in order to properly quantify confidence in results (which will be lower for highly variable genes).
+3. Fit a **generalized linear model** (GLM) for each gene, using a negative Binomial distribution. This takes the normalized counts (from size factors), design formula, and estimated dispersion to produce log2 fold changes (log2FC), standard errors (SEs), and p-values.
+
+The output object, `dds`, contains all the model fits and is ready for extracting results.
+
+**Exercise 9: Use the `DESeq()` function to update the `dds` object and include all specified model fits:**
+
+```{r deseq}
+dds <- DESeq(dds) # The dds vector is updated
+dds
+```
+
+***
+
+## Extract results
+
+Results can be extracted from a `dds` object using the `results()` function. However, we additionally apply shrinkage to our results. **Shrinkage** pulls extreme or noisy log2FC towards zero when they are not well supported by the data, usually due to:
+
+* Low expression levels
+* High dispersion (biological variability)
+* Small sample sizes
+
+Shrunk log2FC are more stable and realistic, especially in these scenarios. **Normal** shrinkage uses a Normal prior distribution (bell curve with its peak at 0), which assumes that most genes are not differentially expressed and encourages smaller fold changes unless there is strong evidence to the contrary. 
+
+The final log2FCs are then a posterior estimate that combines:
+
+* The observed data, and
+* The prior (Normal distribution centered at 0)
+
+**Exercise 10: Use `lfcShrink()` to extract results for the selected comparison:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  You will get a warning using normal shrinkage, but our experience suggests that it is the best method for these simpler designs.
+
+</details>
+
+```{r shrinkage}
+# Stores the shrunken results of differential expression into the object res_low, within lfcShrink, the comparison is defined, mean_ID is the treatments, contrast_sub$mean_ID is the treatment group, contrast_sub$mean_ID_control is the control group. The DESeq2 package helps calculate log2 fold changes of treatment group vs control group
+res_low <- lfcShrink(dds, 
+                 contrast = c("mean_ID",
+                              contrast_sub$mean_ID,
+                              contrast_sub$mean_ID_control),
+                 type="normal")
+
+head(res_low) # Shows the first couple of rows of the results
+```
+
+***
+
+**Exercise 11: Wrangle the output to additional columns:**
+
+* `gene_symbol` containing the gene names
+* `mean_ID` containing the mean ID of the treated samples
+* `mean_ID_control` containing the mean ID of the control samples
+
+```{r results}
+res_low <- data.frame(res_low) %>% # res_low is converted to a data frame
+  rownames_to_column(var = "gene_symbol") %>% # Rownames contain the gene names, these are moved into gene_symbol
+  mutate(
+    mean_ID = contrast_sub$mean_ID,
+    mean_ID_control = contrast_sub$mean_ID_control 
+  ) # mean_ID and mean_ID_control are added as columns to res_low coming from contrast_sub
+
+head(res_low) # Visualize first couple of genes in res_low
+```
+
+***
+
+## Loop
+
+Using a `for` loop, you can run each of these steps for every required comparison.
+
+**Exercise 12: Loop through the remaining values of the `levels` variable to add all of the comparisons for the low toxicity compound to your `res` object:**
+
+```{r loop}
+# To automate DEG analysis for the other treatment-control pairs with the low-tox compound a loop is used.
+for(i in levels[-1]){ # Iterating over each treatment stored in i, while skipping the first one. 
+  contrast_sub <- contrast_low %>% 
+    filter(mean_ID == i) # Filtering out the row from contrast_low that indicates which mean_ID is the treatment
+  
+  metaData_sub <- Gene_meta %>% 
+    filter(mean_ID %in% c(contrast_sub$mean_ID, contrast_sub$mean_ID_control)) # Filtering from metaData_sub which mean_ID match the treatment or its control
+  
+  countData_sub <- Gene_count2[ , metaData_sub$sample_ID] # A subset is then made of columns out of Gene_count2 that are present in metaData_sub, the count data now matches the meta data
+
+  dds <- DESeqDataSetFromMatrix(
+    countData = countData_sub,
+    colData = metaData_sub,
+    design = ~ mean_ID) # DESeqDataSetFromMatrix is used to assign which data must be used to set up for DEG
+  
+  dds <- DESeq(dds) # The DEG is then run
+  
+  res_low <- rbind(res_low, 
+    data.frame(lfcShrink(dds, 
+                 contrast = c("mean_ID",
+                              contrast_sub$mean_ID,
+                              contrast_sub$mean_ID_control),
+                 type="normal")) %>% 
+    rownames_to_column(var = "gene_symbol") %>% 
+    mutate(
+      mean_ID = contrast_sub$mean_ID,
+      mean_ID_control = contrast_sub$mean_ID_control))
+} # lfcShrink is used to shrink log2 fold changes for the treatment vs control. It is converted into a data frame. The gene names are moved into a gene_symbol column. It is appended to res_low.
+
+head(res_low) # Display the first few rows
+dim(res_low) # Dimensions of res_low
+```
+
+***
+
+**Exercise 13: Perform DEG analysis for the high toxicity compound, saving the output in `res_high``:**
+
+First, we make the contrast for the high toxicity compound and save the levels:
+
+```{r high-contrast}
+contrast_high <- contrast %>% # The adjusted contrast data set is stored in vector contrast_high
+  filter(file_ID == "CS1140") # The contrast data is filtered for the high tox compound chloroacetamide
+
+contrast_high # Print contrast_high
+
+levels <- unique(contrast_high$mean_ID) # All unique mean_ID values in the contrast_high dataset are stored in levels
+
+levels # Levels is printed
+```
+
+Then, we loop through `levels` and save results:
+
+```{r high-loop}
+res_high <- data.frame() # A data frame is made of res_high
+
+for(i in levels){ # A loop is done over all treatment mean_IDs stored in levels
+  contrast_sub <- contrast_high %>% # contrast_high is stored in vector contrast_sub
+    filter(mean_ID == i) # The row corresponding to current treatment i is extracted from contrast high, this gives the treatment (mean_id) and its control (mean_ID_control)
+  
+  metaData_sub <- Gene_meta %>% 
+    filter(mean_ID %in% c(contrast_sub$mean_ID, contrast_sub$mean_ID_control)) # The metadata is filtered to include only the samples from the current treatment (in the loop) and its control
+  
+  countData_sub <- Gene_count2[ , metaData_sub$sample_ID] # A subset is made of Gene_count2 with only the samples in metaData_sub
+
+  dds <- DESeqDataSetFromMatrix(
+    countData = countData_sub,
+    colData = metaData_sub,
+    design = ~ mean_ID) # A DESeq dataset is made including the count and meta data subsets, the design specifies that differences in expression are modeled based on mean_ID (treatment vs control)
+  
+  dds <- DESeq(dds) # The DESeq analysis is run
+  
+  res_high <- rbind(res_high, 
+    data.frame(lfcShrink(dds, 
+                 contrast = c("mean_ID",
+                              contrast_sub$mean_ID,
+ # A datafame is made of the lfcShrink values of res_high, lfcShrink values improve interpretability for low-count genes. rbind adds results to res_high
+                                                           contrast_sub$mean_ID_control),
+                 type="normal")) %>% 
+    rownames_to_column(var = "gene_symbol") %>% # Adds gene_IDs to a column names gene_symbol
+    mutate(
+      mean_ID = contrast_sub$mean_ID,
+      mean_ID_control = contrast_sub$mean_ID_control))
+} # Mutate adds columns to track which comparison to the results belong to
+
+head(res_high) # Displays first few rows of combined results
+dim(res_high) # Checks the dimensions of res_high
+```
+
+***
+
+# Defining DEGs
+
+## Thresholds
+
+There are many ways to define a differentially expressed gene based either on the log2 fold change (log2FC, which reflects the effect size), the adjusted p-value (which reflects the statistical significance after correcting for multiple testing), or a combination of both. For example, some studies may define a gene as differentially expressed if it has an adjusted p-value below 0.05, indicating high statistical confidence, while others may require an absolute log2FC above log2(1.2) (i.e., a twenty percent change) to ensure the change is also biologically meaningful. Combining both criteria helps balance sensitivity and specificity, reducing the chance of identifying genes that are statistically but not biologically relevant, or vice versa.
+
+**Exercise 14: Create two new variables `dir` and `sig` that describe each gene's significance (T/F) and direction of effect (up/down):**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  Don't forget to do it for the high and low toxicity compounds.
+
+</details>
+
+```{r}
+res_high <- res_high %>% 
+  mutate(
+    dir = ifelse(log2FoldChange < 0, "Down", "Up"),
+    sig = ifelse(padj <= 0.05 & abs(log2FoldChange) > log2(1.2), TRUE, FALSE)
+  )
+
+table(res_high$sig, res_high$dir, useNA="always")
+
+res_low <- res_low %>% 
+  mutate(
+    dir = ifelse(log2FoldChange < 0, "Down", "Up"),
+    sig = ifelse(padj <= 0.05 & abs(log2FoldChange) > log2(1.2), TRUE, FALSE)
+  )
+
+table(res_low$sig, res_low$dir, useNA="always")
+```
+
+***
+
+## Save
+
+It is important to save output of analyses locally, especially when they can be quite length to rerun. This will save you considerable time later in the project. 
+
+**Exercise 15: Save the results using the path variables you created at the start of the script:**
+
+```{r save}
+# Results are saved
+save(res_low, file=paste0(root_dir, low_store))
+save(res_high, file=paste0(root_dir, high_store))
+```
+
+***
+
+# Plots
+
+## Dose-response plots
+
+One of the plots that is useful to make following DEG analysis is visualization of any dose response effects. In order to ensure that all data point are plotted correctly, it is helpful to create a base data frame for all the direction, concentration combinations.
+
+**Exercise 16: Create a data frame `plot_df` with all compound, concentration, and direction combinations:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  It may be helpful to `rbind()` your high and low toxicity compound results together for visualizations.
+
+</details>
+
+```{r ref-df}
+res <- rbind(res_high, res_low)
+
+plot_df <- res %>% 
+  filter(!is.na(dir)) %>% 
+  select(mean_ID, dir) %>% 
+  distinct()
+
+plot_df
+```
+
+Using `mean_ID` and `separate()`, you can extract information about the compound and concentration of each experimental group.
+
+**Exercise 17: Create a data frame containing the number of DEGs, concentration, and compound, for each experimental condition and direction:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  Don't forget to set the number of DEGs to 0, where appropriate. 
+
+</details>
+
+```{r plot-df}
+plot_df <- res %>% 
+  filter(sig == TRUE & !is.na(dir)) %>% 
+  group_by(mean_ID, dir) %>%
+  summarize(n = n(), .groups = "drop") %>% 
+  right_join(y = plot_df, by = c("mean_ID", "dir")) %>% 
+  mutate(n = ifelse(is.na(n), 0, n)) %>% 
+  separate(mean_ID, sep="_", into=c("Compound", "Conc_ID", NA), remove=F)
+
+plot_df
+```
+
+***
+
+**Exercise 18: Plot the number of DEGs across concentrations for the two compounds. Do you see a dose-response?**
+
+```{r dose-response}
+plot_df %>%
+  mutate(
+    n = ifelse(dir == "Down", -n, n),
+    dir = factor(dir, levels = c("Up", "Down")),
+    Compound = recode(Compound,
+                      "CS1128" = "TMA",
+                      "CS1140" = "Chloroacetamide"),
+    Compound = factor(Compound, levels = c("TMA", "Chloroacetamide"))  # set order
+  ) %>%
+  ggplot(aes(x = Conc_ID, y = n, fill = dir)) +
+  geom_col() +
+  geom_hline(yintercept = 0, color = "gray40") +
+  scale_fill_manual(values = c("Up" = "#009E73", "Down" = "#CC0000")) +
+  facet_wrap(~Compound, scales = "free_x") +
+  guides(fill = guide_legend(title = NULL)) +
+  theme_bw()
+```
+
+
+
+***
+
+## Volcano plots
+
+A volcano plot is useful to visualize effect sizes and significance of each gene in one plot, by plotting log2 fold changes (x-axis) against -log10 p-values (y-axis).
+
+**Exercise 19: Create volcano plots for each of the compounds:**
+
+<details>
+  <summary><strong>Hint</strong></summary>
+
+  If you want to plot all concentrations, it may be sensible to create distinct plots for the two compounds. However, you could also plot only the top concentration volcano plot, if the dose response is suggestive that this would be more informative. 
+
+</details>
+
+```{r volcano}
+for(i in unique(Gene_meta$compound_ID)[1:2]) {
+  print(res %>% 
+          separate(mean_ID, sep="_", into=c("Compound", "Conc_ID", NA), remove=F) %>% 
+          filter(!is.na(sig) & Compound == i) %>% 
+          mutate(log10p = -log10(pvalue)) %>% 
+          ggplot(aes(x = log2FoldChange, y = log10p)) +
+          geom_point(aes(color=sig), size=0.5) +
+          geom_text_repel(aes(label = ifelse(padj < 1E-4, gene_symbol, NA)),
+                    color="dodgerblue", size=2) +
+          xlim(-max(abs(res$log2FoldChange), na.rm=T), max(abs(res$log2FoldChange), na.rm=T)) +
+          scale_color_manual(values = c("grey", "dodgerblue")) +
+          theme_bw() + 
+          ggtitle(i) +
+          facet_wrap(~Conc_ID))
+}
+```
+
+***
+
+## MA plots
+
+One feature that volcano plots miss is the baseline expression of genes. This can mean that very lowly expressed genes appear important (due to high significance and effect sizes). Visualizing results using an MA plot, which plots log2 base mean (y-axis) against log2 fold changes (x-axis), can be helpful to distinguish between noisy genes and biologically relevant ones.
+
+**Exercise 20: Create MA plots for the two compounds. Outline your findings:**
+
+```{r ma}
+for(i in c("TMA", "Chloroacetamide")) {
+  
+  df <- res %>% 
+    separate(mean_ID, sep = "_", into = c("Compound", "Conc_ID", NA), remove = FALSE) %>% 
+    mutate(
+      Compound = recode(Compound,
+                        "CS1128" = "TMA",
+                        "CS1140" = "Chloroacetamide"),
+      log2baseMean = log2(baseMean)
+    ) %>% 
+    filter(!is.na(sig) & Compound == i)
+  
+  message("Compound: ", i, " | Rows after filter: ", nrow(df))
+  if (nrow(df) == 0) next
+  
+  p <- ggplot(df, aes(x = log2baseMean, y = log2FoldChange)) +
+    geom_point(aes(color = sig), size = 0.5) +
+    geom_text_repel(
+      aes(label = ifelse(padj < 1E-4, gene_symbol, NA)),
+      color = "dodgerblue", size = 2
+    ) +
+    ylim(
+      -max(abs(res$log2FoldChange), na.rm = TRUE),
+       max(abs(res$log2FoldChange), na.rm = TRUE)
+    ) +
+    scale_color_manual(values = c("FALSE" = "grey", "TRUE" = "dodgerblue")) +
+    guides(color = guide_legend(title = NULL)) +
+    theme_bw() +
+    ggtitle(i) +
+    facet_wrap(~Conc_ID)
+  
+  print(p)
+}
+```
+
+***
+
+# Advanced question
+
+## Gene level plots
+
+It can also be useful to plot individual gene results, especially to investigate gene-level dose responses.
+
+**Exercise 21: Plot the top 16 genes for each of the compounds in a dose-response plot:**
+
+```{r high-gene}
+top_high <- unique((res_high %>% arrange(padj))$gene_symbol)[1:16]
+top_high
+
+res_high %>% 
+  filter(gene_symbol %in% top_high) %>% 
+  separate(mean_ID, sep="_", into=c('comp', 'c', NA), remove=F) %>% 
+  ggplot(aes(x=c, y=log2FoldChange)) +
+  geom_point() +
+  geom_line(aes(group=gene_symbol)) +
+  facet_wrap(~gene_symbol) +
+  theme_bw()
+```
+
+```{r low-gene}
+top_low <- unique((res_low %>% arrange(padj))$gene_symbol)[1:16]
+top_low
+
+res_low %>% 
+  filter(gene_symbol %in% top_low) %>% 
+  separate(mean_ID, sep="_", into=c('comp', 'c', NA), remove=F) %>% 
+  ggplot(aes(x=c, y=log2FoldChange)) +
+  geom_point() +
+  geom_line(aes(group=gene_symbol)) +
+  facet_wrap(~gene_symbol) +
+  theme_bw()
+```
+
+***
+
+# Session Info
+
+```{r session-info}
+devtools::session_info()
+```
+
+
+
